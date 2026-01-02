@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Interactive Map with Location Tracking</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        nav {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            background: #333;
+            padding: 1rem;
+            z-index: 1000;
+        }
+
+        nav a {
+            color: white;
+            margin: 0 1rem;
+            text-decoration: none;
+        }
+
+        .main-content {
+            display: flex;
+            margin-top: 60px;
+            height: calc(100vh - 70px);
+        }
+
+        #map {
+            flex: 3;
+            height: 100%;
+        }
+
+        .location-list {
+            flex: 1;
+            padding: 1rem;
+            overflow-y: auto;
+            border-left: 2px solid #ccc;
+        }
+
+        .location-item {
+            display: grid;
+            grid-template-columns: 30px 2fr 1fr 1fr 60px;
+            gap: 0.5rem;
+            padding: 0.5rem;
+            border-bottom: 1px solid #eee;
+        }
+
+        .delete-btn {
+            background: #ff4444;
+            color: white;
+            border: none;
+            padding: 0.2rem 0.5rem;
+            cursor: pointer;
+        }
+		
+
+
+        footer {
+            position: fixed;
+            bottom: 0;
+            width: 100%;
+            background: #333;
+            color: white;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-around;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 2rem;
+            z-index: 1001;
+        }
+
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+        }
+		
+        #clearAllBtn {
+            margin-bottom: 1rem;
+            width: 100%;
+            padding: 0.5rem;
+            background: #ff4444;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        #clearAllBtn:hover {
+            background: #cc0000;
+        }
+
+        #toggleList {
+            margin-bottom: 1rem;
+            width: 100%;
+            padding: 0.5rem;
+            background: #ff4444;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        #toggleList:hover {
+            background: #cc0000;
+        }
+
+		#loadGpxBtn {
+			background: #007bff;
+			color: white;
+			margin-bottom: 1rem;
+			cursor: pointer;
+			padding: 0.5rem;
+		}
+
+		#loadGpxBtn:hover {
+			background: #0056b3;
+		}		
+		
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="#resources">Resources</a>
+        <a href="#maps">Maps</a>
+        <a href="#tools">Tools</a>
+		<button onclick="showHideLocationList()">Hide/Show List</button>>
+    </nav>
+
+    <div class="main-content">
+        <div id="map"></div>
+        <div class="location-list" id="location-list">
+			<button id="loadGpxBtn" style="margin-bottom: 1rem; width: 100%; padding: 0.5rem; background: #007bff; color: white; border: none; cursor: pointer;">Load GPX File</button>
+			<input type="file" id="gpxInput" style="display: none;" accept=".gpx" />
+		    <button id="clearAllBtn">Clear All Markers</button>
+            <div id="locationList"></div>
+            <div id="totalDistance">Total Distance: 0.00 km</div>
+        </div>
+    </div>
+
+
+
+    <div class="modal-overlay" id="modalOverlay"></div>
+    <div class="modal" id="contactModal">
+        <h2>Contact Us</h2>
+        <form>
+            <input type="text" placeholder="Name" required>
+            <input type="email" placeholder="Email" required>
+            <textarea placeholder="Message" required></textarea>
+            <button type="submit">Send</button>
+        </form>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script>
+        let map;
+        let markers = [];
+        let polyline = null;
+
+        function initMap() {
+            map = L.map('map').setView([22.350076, 114.158249], 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+            
+            map.on('click', function(e) {
+                const newMarker = L.marker(e.latlng).addTo(map);
+                markers.push(newMarker);
+                updatePolyline();
+                updateLocationList();
+                updateTotalDistance();
+            });
+        }
+
+        function updatePolyline() {
+            if (polyline) map.removeLayer(polyline);
+            if (markers.length > 1) {
+                const latlngs = markers.map(marker => marker.getLatLng());
+                polyline = L.polyline(latlngs, {color: 'blue'}).addTo(map);
+            }
+        }
+
+        function haversine(point1, point2) {
+            const R = 6371;
+            const dLat = (point2.lat - point1.lat) * Math.PI / 180;
+            const dLon = (point2.lng - point1.lng) * Math.PI / 180;
+            const a = 
+                Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(point1.lat * Math.PI / 180) * 
+                Math.cos(point2.lat * Math.PI / 180) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        function calculateBearing(point1, point2) {
+            const lat1 = point1.lat * Math.PI / 180;
+            const lon1 = point1.lng * Math.PI / 180;
+            const lat2 = point2.lat * Math.PI / 180;
+            const lon2 = point2.lng * Math.PI / 180;
+
+            const y = Math.sin(lon2 - lon1) * Math.cos(lat2);
+            const x = Math.cos(lat1) * Math.sin(lat2) -
+                    Math.sin(lat1) * Math.cos(lat2) * Math.cos(lon2 - lon1);
+            let bearing = Math.atan2(y, x);
+            bearing = bearing * 180 / Math.PI;
+            return (bearing + 360) % 360;
+        }
+
+        function updateLocationList() {
+            const locationList = document.getElementById('locationList');
+            locationList.innerHTML = '';
+
+            markers.forEach((marker, index) => {
+                const div = document.createElement('div');
+                div.className = 'location-item';
+                const latLng = marker.getLatLng();
+                
+                let distance = '';
+                let bearing = '';
+                if (index > 0) {
+                    const prev = markers[index-1].getLatLng();
+                    distance = haversine(prev, latLng).toFixed(2) + ' km';
+                    bearing = Math.round(calculateBearing(prev, latLng)) + '°';
+                }
+
+                div.innerHTML = `
+                    <div>${index + 1}</div>
+                    <div>${latLng.lat.toFixed(6)}, ${latLng.lng.toFixed(6)}</div>
+                    <div>${distance}</div>
+                    <div>${bearing}</div>
+                    <button class="delete-btn" data-index="${index}">Delete</button>
+                `;
+
+                div.querySelector('.delete-btn').addEventListener('click', () => {
+                    deleteMarker(index);
+                });
+
+                locationList.appendChild(div);
+            });
+        }
+
+        function deleteMarker(index) {
+            map.removeLayer(markers[index]);
+            markers.splice(index, 1);
+            updatePolyline();
+            updateLocationList();
+            updateTotalDistance();
+        }
+
+        function updateTotalDistance() {
+            let total = 0;
+            for (let i = 1; i < markers.length; i++) {
+                total += haversine(
+                    markers[i-1].getLatLng(),
+                    markers[i].getLatLng()
+                );
+            }
+            document.getElementById('totalDistance').textContent = 
+                `Total Distance: ${total.toFixed(2)} km`;
+        }
+
+        function openModal() {
+            document.getElementById('modalOverlay').style.display = 'block';
+            document.getElementById('contactModal').style.display = 'block';
+        }
+
+        document.getElementById('clearAllBtn').addEventListener('click', clearAllMarkers);
+
+        function clearAllMarkers() {
+            // Remove all markers from the map
+            markers.forEach(marker => map.removeLayer(marker));
+            markers = [];
+            
+            // Remove polyline
+            if (polyline) {
+                map.removeLayer(polyline);
+                polyline = null;
+            }
+            
+            // Update UI
+            updateLocationList();
+            updateTotalDistance();
+        }
+
+        window.onload = initMap;
+        document.getElementById('modalOverlay').addEventListener('click', () => {
+            document.getElementById('modalOverlay').style.display = 'none';
+            document.getElementById('contactModal').style.display = 'none';
+        });
+		
+    document.getElementById('loadGpxBtn').addEventListener('click', function () {
+        document.getElementById('gpxInput').click(); // Trigger file selector
+    });
+
+    document.getElementById('gpxInput').addEventListener('change', function (event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function (e) {
+            const gpxContent = e.target.result;
+
+            // Parse GPX file content
+            const parser = new DOMParser();
+            const gpxDoc = parser.parseFromString(gpxContent, 'application/xml');
+            const trkpts = gpxDoc.getElementsByTagName('trkpt');
+
+            if (trkpts.length === 0) {
+                alert('No coordinates found in GPX file.');
+                return;
+            }
+
+            // Clear existing markers and polylines
+            clearAllMarkers();
+
+            // Process GPX coordinates
+            const points = [];
+            for (let i = 0; i < trkpts.length; i++) {
+                const lat = parseFloat(trkpts[i].getAttribute('lat'));
+                const lon = parseFloat(trkpts[i].getAttribute('lon'));
+                points.push({ lat, lon });
+            }
+
+            // Mark start and end points
+            const startPoint = points[0];
+            const endPoint = points[points.length - 1];
+            const startMarker = L.marker([startPoint.lat, startPoint.lon]).addTo(map).bindPopup('Start Point');
+            const endMarker = L.marker([endPoint.lat, endPoint.lon]).addTo(map).bindPopup('End Point');
+            markers.push(startMarker, endMarker);
+
+            // Draw polyline
+            if (points.length > 1) {
+                const latlngs = points.map(p => [p.lat, p.lon]);
+                polyline = L.polyline(latlngs, { color: 'blue' }).addTo(map);
+            }
+
+            // Calculate total distance
+            let totalDistance = 0;
+            for (let i = 1; i < points.length; i++) {
+                const distance = haversine2(points[i - 1], points[i]);
+                totalDistance += distance;
+            }
+
+            // Update total distance display
+            document.getElementById('totalDistance').textContent = `Total Distance: ${totalDistance.toFixed(2)} km`;
+
+            // Update the map view to fit the bounds of the GPX route
+            if (points.length > 0) {
+                const bounds = L.latLngBounds(points.map(p => [p.lat, p.lon]));
+                map.fitBounds(bounds);
+            }
+        };
+
+        reader.onerror = function () {
+            alert('Failed to read GPX file.');
+        };
+
+        reader.readAsText(file);
+    });
+
+    // Haversine function to calculate distance between two points
+    function haversine2(point1, point2) {
+        const R = 6371; // Earth radius in km
+        const dLat = (point2.lat - point1.lat) * Math.PI / 180;
+        const dLon = (point2.lon - point1.lon) * Math.PI / 180;
+        const lat1 = point1.lat * Math.PI / 180;
+        const lat2 = point2.lat * Math.PI / 180;
+
+        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1) * Math.cos(lat2) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return R * c;
+    }	
+	
+	function showHideLocationList(){
+		const locationList = document.getElementById('location-list');
+  
+  		if (locationList.style.display=='block') {
+			locationList.style.display='none'; // Show the list
+		} else {
+			locationList.style.display='block';  // Hide the list
+		}		
+		
+	}
+	
+	
+    </script>
+</body>
+</html>
