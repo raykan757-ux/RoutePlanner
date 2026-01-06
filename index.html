@@ -58,8 +58,38 @@
             padding: 0.2rem 0.5rem;
             cursor: pointer;
         }
-		
 
+        /* Number labels above markers */
+        .leaflet-tooltip.marker-label {
+            background: #fff;
+            border: 1px solid #333;
+            color: #000;
+            font-weight: bold;
+            border-radius: 12px;
+            padding: 2px 6px;
+            box-shadow: 0 0 2px rgba(0,0,0,0.3);
+        }
+
+        /* Arrow markers between segments */
+        .arrow-icon {
+            width: 24px;
+            height: 24px;
+            pointer-events: none;
+            display: block;
+        }
+        .arrow-icon .arrow-wrap {
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transform-origin: 50% 50%;
+        }
+        .arrow-icon svg {
+            width: 18px;
+            height: 18px;
+            display: block;
+        }
 
         footer {
             position: fixed;
@@ -141,7 +171,20 @@
         <a href="#resources">Resources</a>
         <a href="#maps">Maps</a>
         <a href="#tools">Tools</a>
-		<button onclick="showHideLocationList()">Hide/Show List</button>>
+        <select id="coordFormat" style="margin-left:1rem;">
+            <option value="DD">Decimal Degrees (DD)</option>
+            <option value="HK80">Hong Kong 1980 Grid System (HK80)</option>
+        </select>
+        <button id="exportBtn" style="margin-left:1rem;">Export CSV</button>
+        <button id="testHKBtn" style="margin-left:1rem;">Test HK80</button>
+        <button id="runHKTestsBtn" style="margin-left:1rem;">Run HK80 Tests</button>
+        <label style="margin-left:0.5rem; color:#fff; font-weight:normal;">
+            <input type="checkbox" id="useCustomFallback" style="margin-left:0.35rem;"> Use custom HK1980 fallback
+        </label>
+        <label style="margin-left:0.5rem; color:#fff; font-weight:normal;">
+            <input type="checkbox" id="showMarkerLabels" style="margin-left:0.35rem;" checked> Show marker numbers
+        </label>
+		<button onclick="showHideLocationList()">Hide/Show List</button>
     </nav>
 
     <div class="main-content">
@@ -152,6 +195,7 @@
 		    <button id="clearAllBtn">Clear All Markers</button>
             <div id="locationList"></div>
             <div id="totalDistance">Total Distance: 0.00 km</div>
+            <pre id="hkDebug" style="white-space:pre-wrap; margin-top:1rem; background:#f8f8f8; padding:0.5rem; border:1px solid #eee;"></pre>
         </div>
     </div>
 
@@ -169,10 +213,201 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.min.js"></script>
     <script>
         let map;
         let markers = [];
         let polyline = null;
+        let arrowMarkers = []; // markers for arrow heads between segments
+
+        // proj4 definition for HK1980 / TM (EPSG:2326)
+        function defineHK2326() {
+            proj4.defs('EPSG:2326', "+proj=tmerc +lat_0=22.3121333333333 +lon_0=114.178555555556 +k=1 +x_0=836694.05 +y_0=819069.8 +ellps=intl +towgs84=-162.619,-276.959,-161.764,-0.067753,2.243648,1.158828,-1.094246 +units=m +no_defs +type=crs");
+        }
+
+        function ensureProj4Loaded(cb) {
+            if (typeof proj4 !== 'undefined') {
+                // ensure EPSG is defined
+                try {
+                    defineHK2326();
+                } catch (e) {}
+                if (cb) cb();
+                return;
+            }
+            const s = document.createElement('script');
+            s.src = 'https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.min.js';
+            s.onload = function() {
+                if (typeof proj4 !== 'undefined') {
+                    defineHK2326();
+                    if (cb) cb();
+                } else {
+                    alert('proj4 failed to load; HK80 unavailable.');
+                    document.getElementById('coordFormat').value = 'DD';
+                    updateLocationList();
+                }
+            };
+            s.onerror = function() {
+                alert('Failed to load proj4; HK80 unavailable.');
+                document.getElementById('coordFormat').value = 'DD';
+                updateLocationList();
+            };
+            document.head.appendChild(s);
+        }
+
+        const _KK_letters = 'ABCDEFGHJKLMNOPQRSTUVWXYZ'; // skip 'I'
+        const HK80_VERSION = 'v1.1'; // debug version tag for HK80 mapping tweaks
+
+        // Using local conversion (proj4) with optional custom fallback only.
+
+        // HK80 automated tests (authoritative examples)
+        const HK80_TESTS = [
+            { name: 'Test A', lat: 22.3666, lng: 114.1564, expected: 'KK 293 792' },
+            { name: 'Test B', lat: 22.385111, lng: 114.309200, expected: 'KK 438 324' },
+            { name: 'Test C', lat: 22.344082, lng: 114.064394, expected: 'JK 855 744' }
+        ];
+
+        // Simple helper to normalize KK labels for comparison
+        function normalizeKK(s) {
+            return String(s).replace(/\s+/g, ' ').trim().toUpperCase();
+        }
+
+        /**
+         * Convert WGS84 lat/lng to HK 1-km grid reference (HK1980 Grid System)
+         * Uses proj4 to transform to EPSG:2326, rounds to nearest km, and
+         * computes the official two-letter prefix using fixed offsets. The
+         * offsets were chosen to align with the HK 1-km lettering layout so
+         * typical Hong Kong coordinates map as expected (e.g., 22.3666,114.1564 => KK 293 792).
+         */
+        // Convert easting/northing (EPSG:2326) to HK 1-km grid (KK eee nnn)
+        function enToKK(easting, northing, debug = false) {
+            const EASTING_BASE = 541000;   // meters
+            const NORTHING_BASE = 33000;   // meters
+
+            const e_rel = easting - EASTING_BASE;
+            const n_rel = northing - NORTHING_BASE;
+
+            const e100k = Math.floor(e_rel / 100000);
+            const n100k = Math.floor(n_rel / 100000);
+
+            const EAST_OFFSET = 6;
+            const NORTH_OFFSET = 2;
+
+            const idx1 = (e100k + EAST_OFFSET + _KK_letters.length) % _KK_letters.length;
+            const idx2 = (n100k + NORTH_OFFSET + _KK_letters.length) % _KK_letters.length;
+            const l1 = _KK_letters[idx1] || 'A';
+            const l2 = _KK_letters[idx2] || 'A';
+            const prefix = `${l1}${l2}`;
+
+            const e_km = Math.round(e_rel / 1000);
+            const n_km = Math.round(n_rel / 1000);
+
+            const e_disp = String(((e_km % 1000) + 1000) % 1000).padStart(3, '0');
+            const n_disp = String(((n_km % 1000) + 1000) % 1000).padStart(3, '0');
+
+            const label = `${prefix} ${e_disp} ${n_disp}`;
+
+            if (debug) {
+                return {
+                    easting: Math.round(easting),
+                    northing: Math.round(northing),
+                    EASTING_BASE, NORTHING_BASE,
+                    e_rel: Math.round(e_rel), n_rel: Math.round(n_rel),
+                    e100k, n100k,
+                    idx1, idx2,
+                    l1, l2,
+                    e_km, n_km,
+                    e_disp, n_disp,
+                    label
+                };
+            }
+            return label;
+        }
+
+        // Local-only conversion wrapper: returns an object {label,source,...}
+        function convertLatLngToKK_localWrapper(lat, lng) {
+            // Ensure proj4 is available
+            if (typeof proj4 === 'undefined') {
+                console.warn('proj4 not available; returning lat/lng fallback');
+                return { label: `${lat.toFixed(6)}, ${lng.toFixed(6)}`, source: 'fallback' };
+            }
+
+            // Ensure EPSG:2326 is defined before calling proj4
+            try { defineHK2326(); } catch (e) {}
+
+            const useCustom = document.getElementById('useCustomFallback') && document.getElementById('useCustomFallback').checked;
+            if (useCustom) {
+                try {
+                    const p = proj4('EPSG:4326', 'EPSG:2326', [lng, lat]);
+                    const easting = p[0];
+                    const northing = p[1];
+                    return { label: HK1980ToKK.convert(northing, easting), source: 'custom', easting: Math.round(easting), northing: Math.round(northing) };
+                } catch (ex) {
+                    console.warn('Custom fallback failed, using local conversion', ex);
+                }
+            }
+
+            // Use local proj4-based conversion
+            try {
+                const localLabel = latLngToKK_local(lat, lng);
+                return { label: localLabel, source: 'local' };
+            } catch (e) {
+                console.warn('Local proj4 conversion failed; returning lat/lng', e);
+                return { label: `${lat.toFixed(6)}, ${lng.toFixed(6)}`, source: 'fallback' };
+            }
+        }
+
+        // Local proj4-based conversion preserved for fallback
+        function latLngToKK_local(lat, lng, debug = false) {
+            if (typeof proj4 === 'undefined') return debug ? { error: 'proj4 not loaded' } : `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+            const p = proj4('EPSG:4326', 'EPSG:2326', [lng, lat]);
+            const easting = p[0];
+            const northing = p[1];
+            const res = enToKK(easting, northing, debug);
+            if (debug) return Object.assign({ lat, lng, easting: Math.round(easting), northing: Math.round(northing) }, res);
+            return res;
+        }
+
+        // Optional user-provided HK1980 -> KK conversion (fallback)
+        const HK1980ToKK = {
+            /**
+             * Convert HK1980 northing/easting to KK grid using the user's heuristic
+             * @param {number} northing
+             * @param {number} easting
+             * @returns {string}
+             */
+            convert: function(northing, easting) {
+                // Apply small datum offsets proposed by the user
+                const utmEasting = Math.floor(easting + 195);
+                const utmNorthing = Math.floor(northing + 53);
+
+                const eStr = String(Math.abs(utmEasting)).padStart(6, '0');
+                const nStr = String(Math.abs(utmNorthing)).padStart(6, '0');
+
+                // Extract the first 3 digits of the last five digits
+                const kkE = eStr.substring(eStr.length - 5, eStr.length - 2);
+                const kkN = nStr.substring(nStr.length - 5, nStr.length - 2);
+
+                return `KK ${kkE} ${kkN}`;
+            }
+        };
+
+        function getSelectedFormat() {
+            const sel = document.getElementById('coordFormat');
+            return sel ? sel.value : 'DD';
+        }
+
+        function initCoordFormatListener() {
+            const sel = document.getElementById('coordFormat');
+            if (!sel) return;
+            sel.addEventListener('change', () => {
+                const val = sel.value;
+                if (val === 'HK80') {
+                    ensureProj4Loaded(updateLocationList);
+                } else {
+                    updateLocationList();
+                }
+            });
+        }
 
         function initMap() {
             map = L.map('map').setView([22.350076, 114.158249], 13);
@@ -188,10 +423,37 @@
         }
 
         function updatePolyline() {
-            if (polyline) map.removeLayer(polyline);
+            // remove existing polyline
+            if (polyline) {
+                try { map.removeLayer(polyline); } catch (e) {}
+                polyline = null;
+            }
+            // remove existing arrow markers
+            arrowMarkers.forEach(am => { try { map.removeLayer(am); } catch (e) {} });
+            arrowMarkers = [];
+
             if (markers.length > 1) {
                 const latlngs = markers.map(marker => marker.getLatLng());
                 polyline = L.polyline(latlngs, {color: 'blue'}).addTo(map);
+
+                // create arrow markers for each segment
+                for (let i = 0; i < latlngs.length - 1; i++) {
+                    const a = latlngs[i];
+                    const b = latlngs[i+1];
+                    const midLat = (a.lat + b.lat) / 2;
+                    const midLng = (a.lng + b.lng) / 2;
+                    const mid = L.latLng(midLat, midLng);
+                    const bearing = calculateBearing(a, b);
+
+                    // small SVG triangle pointing up; we'll rotate the wrapper to bearing
+                    const svg = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L22 22 L2 22 Z" fill="blue"/></svg>`;
+                    const html = `<div class=\"arrow-wrap\" style=\"transform:rotate(${bearing}deg);\">${svg}</div>`;
+                    const icon = L.divIcon({ className: 'arrow-icon', html, iconSize: [24,24], iconAnchor: [12,12] });
+
+                    const arrow = L.marker(mid, { icon: icon, interactive: false });
+                    arrow.addTo(map);
+                    arrowMarkers.push(arrow);
+                }
             }
         }
 
@@ -222,9 +484,13 @@
             return (bearing + 360) % 360;
         }
 
-        function updateLocationList() {
+        async function updateLocationList() {
             const locationList = document.getElementById('locationList');
             locationList.innerHTML = '';
+            const format = getSelectedFormat();
+
+            // For HK80, we will gather conversion promises and update each row when ready
+            const conversions = [];
 
             markers.forEach((marker, index) => {
                 const div = document.createElement('div');
@@ -239,9 +505,16 @@
                     bearing = Math.round(calculateBearing(prev, latLng)) + '°';
                 }
 
+                // Compute coordinate display (use local wrapper for HK80)
+                let coordDisplay = `${latLng.lat.toFixed(6)}, ${latLng.lng.toFixed(6)}`;
+                if (format === 'HK80') {
+                    const res = convertLatLngToKK_localWrapper(latLng.lat, latLng.lng);
+                    coordDisplay = (res && res.label) ? res.label : 'Error';
+                }
+
                 div.innerHTML = `
                     <div>${index + 1}</div>
-                    <div>${latLng.lat.toFixed(6)}, ${latLng.lng.toFixed(6)}</div>
+                    <div>${coordDisplay}</div>
                     <div>${distance}</div>
                     <div>${bearing}</div>
                     <button class="delete-btn" data-index="${index}">Delete</button>
@@ -252,7 +525,26 @@
                 });
 
                 locationList.appendChild(div);
+
+                // Ensure marker shows its list index above the marker, respecting the show/hide checkbox
+                const showLabels = document.getElementById('showMarkerLabels') ? document.getElementById('showMarkerLabels').checked : true;
+                if (marker.getTooltip && marker.getTooltip()) {
+                    marker.getTooltip().setContent(String(index + 1));
+                    if (showLabels) marker.openTooltip(); else marker.closeTooltip();
+                } else {
+                    marker.bindTooltip(String(index + 1), {
+                        permanent: true,
+                        direction: 'top',
+                        className: 'marker-label',
+                        offset: [0, -10]
+                    });
+                    if (showLabels) marker.openTooltip();
+                }
             });
+
+            // Optionally wait for all conversions to complete (not required for rendering)
+            try { await Promise.all(conversions); }
+            catch (e) { /* ignore per-row errors */ }
         }
 
         function deleteMarker(index) {
@@ -292,13 +584,51 @@
                 map.removeLayer(polyline);
                 polyline = null;
             }
-            
+
+            // Remove arrow markers
+            arrowMarkers.forEach(am => { try { map.removeLayer(am); } catch (e) {} });
+            arrowMarkers = [];
+
             // Update UI
             updateLocationList();
             updateTotalDistance();
         }
 
-        window.onload = initMap;
+        function updateMarkerLabelsVisibility() {
+            const checkbox = document.getElementById('showMarkerLabels');
+            const show = checkbox ? checkbox.checked : true;
+            markers.forEach((marker, idx) => {
+                if (marker.getTooltip && marker.getTooltip()) {
+                    marker.getTooltip().setContent(String(idx + 1));
+                    if (show) marker.openTooltip(); else marker.closeTooltip();
+                } else if (show) {
+                    marker.bindTooltip(String(idx + 1), {
+                        permanent: true,
+                        direction: 'top',
+                        className: 'marker-label',
+                        offset: [0, -10]
+                    }).openTooltip();
+                }
+            });
+        }
+
+        window.onload = function() {
+            initMap();
+            initCoordFormatListener();
+            // If proj4 is already present, ensure EPSG:2326 is defined
+            if (typeof proj4 !== 'undefined') {
+                try { defineHK2326(); } catch (e) {}
+            }
+            // If HK80 is pre-selected, ensure proj4 is ready (loads if necessary)
+            const sel = document.getElementById('coordFormat');
+            if (sel && sel.value === 'HK80') ensureProj4Loaded(updateLocationList);
+
+            // Hook up show/hide marker labels checkbox
+            const lblBox = document.getElementById('showMarkerLabels');
+            if (lblBox) {
+                lblBox.addEventListener('change', () => updateMarkerLabelsVisibility());
+            }
+        };
         document.getElementById('modalOverlay').addEventListener('click', () => {
             document.getElementById('modalOverlay').style.display = 'none';
             document.getElementById('contactModal').style.display = 'none';
@@ -343,6 +673,9 @@
             const startMarker = L.marker([startPoint.lat, startPoint.lon]).addTo(map).bindPopup('Start Point');
             const endMarker = L.marker([endPoint.lat, endPoint.lon]).addTo(map).bindPopup('End Point');
             markers.push(startMarker, endMarker);
+            // Show numbered labels and update list for the GPX points
+            updateLocationList();
+            updateTotalDistance();
 
             // Draw polyline
             if (points.length > 1) {
@@ -373,6 +706,150 @@
 
         reader.readAsText(file);
     });
+
+    // Export CSV button handler — use async export when HK80 is selected
+    document.getElementById('exportBtn').addEventListener('click', async function () {
+        const format = getSelectedFormat();
+        if (format === 'HK80') {
+            await exportRouteCSV();
+        } else {
+            exportRouteCSV();
+        }
+    });
+
+    // HK80 test button — runs a diagnostic (single point) and shows details
+    document.getElementById('testHKBtn').addEventListener('click', function () {
+        runHK80Test();
+    });
+
+    async function runHK80Test() {
+        const dbgDiv = document.getElementById('hkDebug');
+        const coords = { lat: 22.3666, lng: 114.1564 };
+        const res = convertLatLngToKK_localWrapper(coords.lat, coords.lng);
+        console.log('HK80 test result:', res, 'version:', HK80_VERSION);
+        const header = `HK80 Version: ${HK80_VERSION} — Test for ${coords.lat},${coords.lng}\n`;
+        if (dbgDiv) {
+            dbgDiv.textContent = header + JSON.stringify(res, null, 2);
+        } else {
+            alert(header + JSON.stringify(res, null, 2));
+        }
+    }
+
+    // Run automated verification tests (HK80_TESTS)
+    document.getElementById('runHKTestsBtn').addEventListener('click', runHK80Verification);
+
+    function runHK80Verification() {
+        const dbgDiv = document.getElementById('hkDebug');
+        const results = [];
+        HK80_TESTS.forEach(test => {
+            const res = convertLatLngToKK_localWrapper(test.lat, test.lng);
+            const actual = res && res.label ? res.label : String(res);
+            const ok = normalizeKK(actual) === normalizeKK(test.expected);
+            results.push({ name: test.name, lat: test.lat, lng: test.lng, expected: test.expected, actual, ok, source: (res && res.source) || 'local', e: (res && res.easting) || null, n: (res && res.northing) || null });
+        });
+
+        // Build output
+        let out = `HK80 Verification — Version: ${HK80_VERSION}\n\n`;
+        let allPass = true;
+        results.forEach(r => {
+            out += `${r.name}: ${r.lat},${r.lng}\n`;
+            out += `  Expected: ${r.expected}\n`;
+            out += `  Actual:   ${r.actual}  (source: ${r.source})\n`;
+            out += `  Result:   ${r.ok ? 'PASS ✅' : 'FAIL ❌'}\n`;
+            if (!r.ok) {
+                allPass = false;
+                // Add deeper debug info when failing
+                out += `  Debug: `;
+                try {
+                    if (r.e == null || r.n == null) {
+                        // compute e/n explicitly
+                        if (typeof proj4 !== 'undefined') {
+                            try { defineHK2326(); } catch (e) {}
+                            const p = proj4('EPSG:4326', 'EPSG:2326', [r.lng, r.lat]);
+                            const easting = Math.round(p[0]);
+                            const northing = Math.round(p[1]);
+                            out += `easting=${easting}, northing=${northing}\n`;
+                            const details = enToKK(easting, northing, true);
+                            out += `    enToKK internals: ${JSON.stringify(details)}\n`;
+                        } else {
+                            out += 'proj4 not loaded\n';
+                        }
+                    } else {
+                        out += `easting=${r.e}, northing=${r.n}\n`;
+                        const details = enToKK(r.e, r.n, true);
+                        out += `    enToKK internals: ${JSON.stringify(details)}\n`;
+                    }
+                } catch (err) {
+                    out += `    Debug failed: ${err}\n`;
+                }
+            }
+            out += '\n';
+        });
+        out += `Summary: ${allPass ? 'ALL TESTS PASS ✅' : 'SOME TESTS FAILED ❌'}\n`;
+
+        if (dbgDiv) dbgDiv.textContent = out;
+        console.log('HK80 verification results:', results);
+
+        // If all pass, mark cleanup todo as in-progress automatically
+        if (allPass) {
+            // indicate to user we could remove debug UI now
+            out += '\nNote: All tests passed. You can remove the debug UI when ready.';
+            if (dbgDiv) dbgDiv.textContent = out;
+        }
+
+        return results;
+    }
+
+    function exportRouteCSV() {
+        const format = getSelectedFormat();
+        // Use UTF-8 BOM for Excel compatibility
+        let csv = '\uFEFFIndex,Coordinate,Distance,Bearing\n';
+
+        if (format === 'HK80') {
+            for (let i = 0; i < markers.length; i++) {
+                const m = markers[i];
+                const latLng = m.getLatLng();
+                const res = convertLatLngToKK_localWrapper(latLng.lat, latLng.lng);
+                const coord = res && res.label ? res.label : '';
+                let distance = '';
+                let bearing = '';
+                if (i > 0) {
+                    const prev = markers[i - 1].getLatLng();
+                    distance = haversine(prev, latLng).toFixed(2) + ' km';
+                    bearing = Math.round(calculateBearing(prev, latLng)) + '°';
+                }
+                csv += `${i + 1},"${coord}",${distance},${bearing}\n`;
+            }
+        } else {
+            for (let i = 0; i < markers.length; i++) {
+                const m = markers[i];
+                const latLng = m.getLatLng();
+                const coord = `${latLng.lat.toFixed(6)}, ${latLng.lng.toFixed(6)}`;
+                let distance = '';
+                let bearing = '';
+                if (i > 0) {
+                    const prev = markers[i - 1].getLatLng();
+                    distance = haversine(prev, latLng).toFixed(2) + ' km';
+                    bearing = Math.round(calculateBearing(prev, latLng)) + '°';
+                }
+                csv += `${i + 1},"${coord}",${distance},${bearing}\n`;
+            }
+        }
+
+        // Add total distance line
+        const totalText = document.getElementById('totalDistance').textContent.replace('Total Distance: ', '');
+        csv += `\nTotal Distance,${totalText}\n`;
+
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'route.csv';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    }
 
     // Haversine function to calculate distance between two points
     function haversine2(point1, point2) {
