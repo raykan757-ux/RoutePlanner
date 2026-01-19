@@ -177,7 +177,7 @@
         </select>
         <button id="exportBtn" style="margin-left:1rem;">Export CSV</button>
         <label style="margin-left:0.5rem; color:#fff; font-weight:normal;">
-            <input type="checkbox" id="showMarkerLabels" style="margin-left:0.35rem;" checked> Show marker numbers
+            <input type="checkbox" id="showMarkerLabels" style="margin-left:0.35rem;" checked> Show marker
         </label>
 		<button onclick="showHideLocationList()">Hide/Show List</button>
     </nav>
@@ -249,7 +249,12 @@
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
             
             map.on('click', function(e) {
-                const newMarker = L.marker(e.latlng).addTo(map);
+                const newMarker = L.marker(e.latlng);
+                const checkbox = document.getElementById('showMarkerLabels');
+                const show = checkbox ? checkbox.checked : true;
+                if (show) {
+                    newMarker.addTo(map);
+                }
                 markers.push(newMarker);
                 updatePolyline();
                 updateLocationList();
@@ -446,16 +451,28 @@
             const checkbox = document.getElementById('showMarkerLabels');
             const show = checkbox ? checkbox.checked : true;
             markers.forEach((marker, idx) => {
-                if (marker.getTooltip && marker.getTooltip()) {
-                    marker.getTooltip().setContent(String(idx + 1));
-                    if (show) marker.openTooltip(); else marker.closeTooltip();
-                } else if (show) {
-                    marker.bindTooltip(String(idx + 1), {
-                        permanent: true,
-                        direction: 'top',
-                        className: 'marker-label',
-                        offset: [0, -10]
-                    }).openTooltip();
+                if (show) {
+                    // Show marker on map
+                    if (!map.hasLayer(marker)) {
+                        marker.addTo(map);
+                    }
+                    // Show tooltip with number
+                    if (marker.getTooltip && marker.getTooltip()) {
+                        marker.getTooltip().setContent(String(idx + 1));
+                        marker.openTooltip();
+                    } else {
+                        marker.bindTooltip(String(idx + 1), {
+                            permanent: true,
+                            direction: 'top',
+                            className: 'marker-label',
+                            offset: [0, -10]
+                        }).openTooltip();
+                    }
+                } else {
+                    // Hide marker from map
+                    if (map.hasLayer(marker)) {
+                        map.removeLayer(marker);
+                    }
                 }
             });
         }
