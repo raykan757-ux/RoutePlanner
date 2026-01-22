@@ -163,7 +163,32 @@
 		#loadGpxBtn:hover {
 			background: #0056b3;
 		}		
-		
+
+        .leaflet-grid-label {
+  			.grid-label-100k {
+    			background-color: yellow;
+    			font-size: 13px;
+    			opacity: 0.6;
+    			color: red;
+    			position: relative;
+    			display: inline;
+    			padding: 1.75px;
+    			border: 1px black solid;
+    			border-radius: 2px;
+  			}
+  			.grid-label-1000m {
+    			background-color: yellow;
+    			font-size: larger;
+    			font-weight: bold;
+    			opacity: 0.8;
+    			color: black;
+    			text-align: center;
+    			position: relative;
+    			display: inline;
+    			padding: 5px;
+    			border-radius: 50%;
+  			}
+			}
     </style>
 </head>
 <body>
@@ -208,12 +233,17 @@
 
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
     <script src="https://unpkg.com/mgrs/dist/mgrs.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/proj4@2.7.5/dist/proj4.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/proj4leaflet@1.0.2/src/proj4leaflet.js"></script>
+    <script src="L.DumbMGRS.js"></script>
     <!-- proj4 removed; HK80 conversion removed -->
     <script>
+
         let map;
         let markers = [];
         let polyline = null;
         let arrowMarkers = []; // markers for arrow heads between segments
+        let mgrsGridLayer = null; // MGRS grid layer
 
         // proj4 definition for HK1980 / TM (EPSG:2326)
         // proj4/EPSG helpers removed with HK80 conversion
@@ -241,7 +271,27 @@
         }
         function initCoordFormatListener() {
             const sel = document.getElementById('coordFormat');
-            if (sel) sel.addEventListener('change', () => updateLocationList());
+            if (sel) sel.addEventListener('change', () => {
+                updateLocationList();
+                toggleMGRSGrid();
+            });
+        }
+
+        function toggleMGRSGrid() {
+            const format = getSelectedFormat();
+            if (format === 'MGRS') {
+                // Add MGRS grid using L.DumbMGRS if not already added
+                if (!mgrsGridLayer && typeof L.DumbMGRS !== 'undefined') {
+                    mgrsGridLayer = L.DumbMGRS();
+                    mgrsGridLayer.addTo(map);
+                }
+            } else {
+                // Remove MGRS grid if it exists
+                if (mgrsGridLayer) {
+                    map.removeLayer(mgrsGridLayer);
+                    mgrsGridLayer = null;
+                }
+            }
         }
 
         function initMap() {
@@ -480,6 +530,7 @@
         window.onload = function() {
                 initMap();
                 initCoordFormatListener();
+                toggleMGRSGrid(); // Initialize grid based on default format
 
                 // Hook up show/hide marker labels checkbox
                 const lblBox = document.getElementById('showMarkerLabels');
