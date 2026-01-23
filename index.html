@@ -408,6 +408,35 @@
                     if (points.length >= 2) {
                         const line = L.polyline(points, { color: '#D00000', weight: 1, opacity: 0.6 });
                         mgrsGridLayer.addLayer(line);
+                        
+                        // Find point closest to top edge that's within visible bounds
+                        let topmostPoint = null;
+                        let maxLat = -Infinity;
+                        for (const pt of points) {
+                            // Check if point is within visible bounds (not extended)
+                            if (pt[1] >= sw.lng && pt[1] <= ne.lng && pt[0] >= sw.lat && pt[0] <= ne.lat) {
+                                if (pt[0] > maxLat) {
+                                    maxLat = pt[0];
+                                    topmostPoint = pt;
+                                }
+                            }
+                        }
+                        
+                        // Show label if we have a visible point
+                        if (topmostPoint) {
+                            const labelValue = e / 1000;
+                            const labelText = labelValue < 10 ? `0${labelValue}` : String(labelValue);
+                            const label = L.marker(topmostPoint, {
+                                icon: L.divIcon({
+                                    className: 'mgrs-grid-label',
+                                    html: `<div style="font-size:10px; color:#D00000; font-weight:bold; background:rgba(255,255,255,0.95); padding:2px 4px; border:1px solid #D00000; white-space:nowrap; border-radius:2px;">${labelText}</div>`,
+                                    iconSize: [40, 16],
+                                    iconAnchor: [20, -5]
+                                }),
+                                interactive: false
+                            });
+                            mgrsGridLayer.addLayer(label);
+                        }
                     }
                 }
                 
@@ -439,6 +468,35 @@
                     if (points.length >= 2) {
                         const line = L.polyline(points, { color: '#D00000', weight: 1, opacity: 0.6 });
                         mgrsGridLayer.addLayer(line);
+                        
+                        // Find point closest to left edge that's within visible bounds
+                        let leftmostPoint = null;
+                        let minLng = Infinity;
+                        for (const pt of points) {
+                            // Check if point is within visible bounds (not extended)
+                            if (pt[1] >= sw.lng && pt[1] <= ne.lng && pt[0] >= sw.lat && pt[0] <= ne.lat) {
+                                if (pt[1] < minLng) {
+                                    minLng = pt[1];
+                                    leftmostPoint = pt;
+                                }
+                            }
+                        }
+                        
+                        // Show label if we have a visible point
+                        if (leftmostPoint) {
+                            const labelValue = n / 1000;
+                            const labelText = labelValue < 10 ? `0${labelValue}` : String(labelValue);
+                            const label = L.marker(leftmostPoint, {
+                                icon: L.divIcon({
+                                    className: 'mgrs-grid-label',
+                                    html: `<div style="font-size:10px; color:#D00000; font-weight:bold; background:rgba(255,255,255,0.95); padding:2px 4px; border:1px solid #D00000; white-space:nowrap; border-radius:2px;">${labelText}</div>`,
+                                    iconSize: [40, 16],
+                                    iconAnchor: [-5, 8]
+                                }),
+                                interactive: false
+                            });
+                            mgrsGridLayer.addLayer(label);
+                        }
                     }
                 }
                 
