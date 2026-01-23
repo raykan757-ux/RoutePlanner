@@ -205,6 +205,7 @@
             <input type="checkbox" id="showMarkerLabels" style="margin-left:0.35rem;" checked> Show marker
         </label>
 		<button onclick="showHideLocationList()">Hide/Show List</button>
+        <span id="mouseCoordinates" style="margin-left:1rem; color:#fff; font-family:monospace; font-size:14px;"></span>
     </nav>
 
     <div class="main-content">
@@ -274,6 +275,35 @@
                 updateLocationList();
                 toggleMGRSGrid();
             });
+        }
+
+        function updateMouseCoordinates(latlng) {
+            const display = document.getElementById('mouseCoordinates');
+            if (!display) return;
+
+            const format = getSelectedFormat();
+            let coordText = '';
+
+            if (format === 'MGRS') {
+                try {
+                    // Use 1-km precision (3 digits) and format as: "50Q KK 229 779"
+                    const raw = mgrs.forward([latlng.lng, latlng.lat], 3);
+                    const prefix = raw.slice(0, 3);
+                    const square = raw.slice(3, 5);
+                    const rest = raw.slice(5);
+                    const half = rest.length / 2;
+                    const easting = rest.slice(0, half);
+                    const northing = rest.slice(half);
+                    coordText = `${prefix} ${square} ${easting} ${northing}`;
+                } catch (e) {
+                    coordText = 'N/A';
+                }
+            } else {
+                // DD format
+                coordText = `${latlng.lat.toFixed(6)}, ${latlng.lng.toFixed(6)}`;
+            }
+
+            display.textContent = coordText;
         }
 
         function toggleMGRSGrid() {
@@ -520,6 +550,17 @@
                 updatePolyline();
                 updateLocationList();
                 updateTotalDistance();
+            });
+
+            // Add mousemove event to update coordinate display
+            map.on('mousemove', function(e) {
+                updateMouseCoordinates(e.latlng);
+            });
+
+            // Clear coordinate display when mouse leaves map
+            map.on('mouseout', function() {
+                const display = document.getElementById('mouseCoordinates');
+                if (display) display.textContent = '';
             });
         }
 
