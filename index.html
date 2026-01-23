@@ -235,7 +235,6 @@
     <script src="https://unpkg.com/mgrs/dist/mgrs.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/proj4@2.7.5/dist/proj4.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/proj4leaflet@1.0.2/src/proj4leaflet.js"></script>
-    <script src="L.DumbMGRS.js"></script>
     <!-- proj4 removed; HK80 conversion removed -->
     <script>
 
@@ -280,17 +279,171 @@
         function toggleMGRSGrid() {
             const format = getSelectedFormat();
             if (format === 'MGRS') {
-                // Add MGRS grid using L.DumbMGRS if not already added
-                if (!mgrsGridLayer && typeof L.DumbMGRS !== 'undefined') {
-                    mgrsGridLayer = L.DumbMGRS();
+                // Add MGRS grid if not already added
+                if (!mgrsGridLayer) {
+                    mgrsGridLayer = L.layerGroup();
+                    drawMGRSGrid();
                     mgrsGridLayer.addTo(map);
+                    // Redraw grid when map moves or zooms
+                    map.on('moveend zoomend', drawMGRSGrid);
                 }
             } else {
                 // Remove MGRS grid if it exists
                 if (mgrsGridLayer) {
+                    map.off('moveend zoomend', drawMGRSGrid);
                     map.removeLayer(mgrsGridLayer);
                     mgrsGridLayer = null;
                 }
+            }
+        }
+
+        function drawMGRSGrid() {
+            if (!mgrsGridLayer || typeof mgrs === 'undefined') return;
+            
+            mgrsGridLayer.clearLayers();
+            
+            const bounds = map.getBounds();
+            const zoom = map.getZoom();
+            const center = bounds.getCenter();
+            
+            // Only display grid for Hong Kong region (approximately)
+            const HK_LAT_MIN = 21.5;
+            const HK_LAT_MAX = 23.5;
+            const HK_LNG_MIN = 113.0;
+            const HK_LNG_MAX = 115.0;
+            
+            if (center.lat < HK_LAT_MIN || center.lat > HK_LAT_MAX || 
+                center.lng < HK_LNG_MIN || center.lng > HK_LNG_MAX) {
+                return; // Outside Hong Kong region, don't draw grid
+            }
+            
+            // Determine grid size based on zoom level
+            let gridInterval = 100000; // 100km default
+            if (zoom >= 7) gridInterval = 100000; // 100km
+            if (zoom >= 9) gridInterval = 10000; // 10km
+            if (zoom >= 11) gridInterval = 1000; // 1km
+            
+            const sw = bounds.getSouthWest();
+            const ne = bounds.getNorthEast();
+            
+            try {
+                // Get center point MGRS to determine the grid zone
+                const centerMGRS = mgrs.forward([center.lng, center.lat]);
+                const gridZone = centerMGRS.substring(0, 5); // e.g., "50QKK"
+                
+                // Calculate actual visible area dimensions for dynamic margin
+                const latRange = ne.lat - sw.lat;
+                const lngRange = ne.lng - sw.lng;
+                const latMargin = latRange * 1.0; // 100% margin
+                const lngMargin = lngRange * 1.0;
+                
+                // Sample multiple points across the visible area to handle all cases
+                const samplePoints = [
+                    [sw.lng, sw.lat], // Southwest
+                    [ne.lng, ne.lat], // Northeast
+                    [sw.lng, ne.lat], // Northwest
+                    [ne.lng, sw.lat], // Southeast
+                    [center.lng, center.lat], // Center
+                    [sw.lng - lngMargin, sw.lat - latMargin], // Extended SW
+                    [ne.lng + lngMargin, ne.lat + latMargin], // Extended NE
+                ];
+                
+                // Extract easting and northing from MGRS string
+                const getEN = (mgrsStr) => {
+                    const e = parseInt(mgrsStr.substring(5, 10) || '0');
+                    const n = parseInt(mgrsStr.substring(10, 15) || '0');
+                    return { e, n };
+                };
+                
+                // Collect all easting and northing values from sample points
+                let minE = Infinity, maxE = -Infinity, minN = Infinity, maxN = -Infinity;
+                
+                for (const [lng, lat] of samplePoints) {
+                    try {
+                        const pointMGRS = mgrs.forward([lng, lat]);
+                        const en = getEN(pointMGRS);
+                        minE = Math.min(minE, en.e);
+                        maxE = Math.max(maxE, en.e);
+                        minN = Math.min(minN, en.n);
+                        maxN = Math.max(maxN, en.n);
+                    } catch (err) {
+                        // Skip points that fail conversion
+                    }
+                }
+                
+                // Round to grid intervals with buffer
+                minE = Math.floor(minE / gridInterval) * gridInterval - gridInterval;
+                maxE = Math.ceil(maxE / gridInterval) * gridInterval + gridInterval;
+                minN = Math.floor(minN / gridInterval) * gridInterval - gridInterval;
+                maxN = Math.ceil(maxN / gridInterval) * gridInterval + gridInterval;
+                
+                const drawnEastings = new Set();
+                const drawnNorthings = new Set();
+                
+                // Draw vertical grid lines (constant easting)
+                for (let e = minE; e <= maxE; e += gridInterval) {
+                    if (drawnEastings.has(e)) continue;
+                    drawnEastings.add(e);
+                    
+                    const points = [];
+                    // Increase sampling density for better line coverage
+                    const step = gridInterval / 20;
+                    for (let n = minN; n <= maxN; n += step) {
+                        try {
+                            const eStr = String(e).padStart(5, '0');
+                            const nStr = String(n).padStart(5, '0');
+                            const testMGRS = gridZone + eStr + nStr;
+                            const pt = mgrs.toPoint(testMGRS);
+                            
+                            // Check if point is within extended bounds
+                            if (pt[1] >= sw.lat - latMargin && pt[1] <= ne.lat + latMargin && 
+                                pt[0] >= sw.lng - lngMargin && pt[0] <= ne.lng + lngMargin) {
+                                points.push([pt[1], pt[0]]);
+                            }
+                        } catch (err) {
+                            // Silently continue on conversion errors
+                        }
+                    }
+                    
+                    if (points.length >= 2) {
+                        const line = L.polyline(points, { color: '#D00000', weight: 1, opacity: 0.6 });
+                        mgrsGridLayer.addLayer(line);
+                    }
+                }
+                
+                // Draw horizontal grid lines (constant northing)
+                for (let n = minN; n <= maxN; n += gridInterval) {
+                    if (drawnNorthings.has(n)) continue;
+                    drawnNorthings.add(n);
+                    
+                    const points = [];
+                    // Increase sampling density for better line coverage
+                    const step = gridInterval / 20;
+                    for (let e = minE; e <= maxE; e += step) {
+                        try {
+                            const eStr = String(e).padStart(5, '0');
+                            const nStr = String(n).padStart(5, '0');
+                            const testMGRS = gridZone + eStr + nStr;
+                            const pt = mgrs.toPoint(testMGRS);
+                            
+                            // Check if point is within extended bounds
+                            if (pt[1] >= sw.lat - latMargin && pt[1] <= ne.lat + latMargin && 
+                                pt[0] >= sw.lng - lngMargin && pt[0] <= ne.lng + lngMargin) {
+                                points.push([pt[1], pt[0]]);
+                            }
+                        } catch (err) {
+                            // Silently continue on conversion errors
+                        }
+                    }
+                    
+                    if (points.length >= 2) {
+                        const line = L.polyline(points, { color: '#D00000', weight: 1, opacity: 0.6 });
+                        mgrsGridLayer.addLayer(line);
+                    }
+                }
+                
+            } catch (e) {
+                console.error('Error drawing MGRS grid:', e);
             }
         }
 
